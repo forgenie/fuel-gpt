@@ -1,6 +1,7 @@
 import { Message } from '@/models'
 import { createParser, ParsedEvent, ReconnectInterval } from 'eventsource-parser'
 import OpenAI from 'openai'
+import { MessageContentText } from 'openai/resources/beta/threads/messages/messages'
 
 export const config = {
   runtime: 'edge'
@@ -89,6 +90,6 @@ const OpenAIStream = async (apiKey: string, model: string, messages: Message[]) 
 
   const messagesResponse = await openai.beta.threads.messages.list(run.thread_id, { order: 'desc' })
 
-  return messagesResponse.data[0].content[0].text.value as string
+  return (messagesResponse.data[0].content[0] as MessageContentText).text.value
 }
 export default handler
