@@ -1,5 +1,6 @@
 import { Message } from '@/models'
 import { createParser, ParsedEvent, ReconnectInterval } from 'eventsource-parser'
+import OpenAI from 'openai'
 
 export const config = {
   runtime: 'edge'
@@ -45,11 +46,11 @@ const handler = async (req: Request): Promise<Response> => {
       if (apiBaseUrl && apiBaseUrl.endsWith('/')) {
         apiBaseUrl = apiBaseUrl.slice(0, -1)
       }
-      apiUrl = `${apiBaseUrl}/v1/chat/completions`
+      apiUrl = `${apiBaseUrl}`
       apiKey = process.env.OPENAI_API_KEY || ''
-      model = 'gpt-3.5-turbo' // todo: allow this to be passed through from client and support gpt-4
+      model = 'asst_TbJnHiF5qJVtv2n5j3QolHKd' // todo: allow this to be passed through from client and support gpt-4
     }
-    const stream = await OpenAIStream(apiUrl, apiKey, model, messagesToSend)
+    const stream = await OpenAIStream(apiKey, model, messagesToSend)
 
     return new Response(stream)
   } catch (error) {
@@ -58,70 +59,36 @@ const handler = async (req: Request): Promise<Response> => {
   }
 }
 
-const OpenAIStream = async (apiUrl: string, apiKey: string, model: string, messages: Message[]) => {
+const OpenAIStream = async (apiKey: string, model: string, messages: Message[]) => {
   const encoder = new TextEncoder()
   const decoder = new TextDecoder()
-  const res = await fetch(apiUrl, {
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-      'api-key': `${apiKey}`
+  const openai = new OpenAI({ apiKey })
+
+  // create thread
+  let run = await openai.beta.threads.createAndRun({
+    assistant_id: model,
+    thread: {
+      messages: messages.map((message) => {
+        return {
+          content: message.content,
+          role: 'user'
+        }
+      })
     },
-    method: 'POST',
-    body: JSON.stringify({
-      model: model,
-      frequency_penalty: 0,
-      max_tokens: 4000,
-      messages: [
-        {
-          role: 'system',
-          content: `You are an AI assistant that helps people find information.`
-        },
-        ...messages
-      ],
-      presence_penalty: 0,
-      stream: true,
-      temperature: 0.7,
-      top_p: 0.95
-    })
+    tools: [
+      {
+        type: 'retrieval'
+      }
+    ]
   })
 
-  if (res.status !== 200) {
-    const statusText = res.statusText
-    throw new Error(
-      `The OpenAI API has encountered an error with a status code of ${res.status} and message ${statusText}`
-    )
+  while (run.status === 'queued' || run.status === 'in_progress') {
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+    run = await openai.beta.threads.runs.retrieve(run.thread_id, run.id)
   }
 
-  return new ReadableStream({
-    async start(controller) {
-      const onParse = (event: ParsedEvent | ReconnectInterval) => {
-        if (event.type === 'event') {
-          const data = event.data
+  const messagesResponse = await openai.beta.threads.messages.list(run.thread_id, { order: 'desc' })
 
-          if (data === '[DONE]') {
-            controller.close()
-            return
-          }
-
-          try {
-            const json = JSON.parse(data)
-            const text = json.choices[0].delta.content
-            const queue = encoder.encode(text)
-            controller.enqueue(queue)
-          } catch (e) {
-            controller.error(e)
-          }
-        }
-      }
-
-      const parser = createParser(onParse)
-
-      for await (const chunk of res.body as any) {
-        const str = decoder.decode(chunk).replace('[DONE]\n', '[DONE]\n\n')
-        parser.feed(str)
-      }
-    }
-  })
+  return messagesResponse.data[0].content[0].text.value as string
 }
 export default handler
